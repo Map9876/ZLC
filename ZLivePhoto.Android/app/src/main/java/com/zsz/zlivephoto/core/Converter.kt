@@ -136,7 +136,11 @@ internal object Converter {
             throw ConvertException("视频过大（${mb}MB），无法合成为动态照片，请选择更短的视频")
         }
 
-        // 容器头判断：非 MP4（缺 ftyp）或 QuickTime(MOV，brand=qt  ) 需要转码为标准 MP4
+        // 按内部文件结构（而非扩展名）决定视频是否需要转码：
+        //   1) 不是 MP4 容器（文件头 4 字节非 "ftyp"，如 MKV/WebM/AVI）→ 转码；
+        //   2) 是 MP4 但 brand 为 QuickTime("qt  "，即 MOV) → 转码；
+        //   3) 是 MP4 但视频编码不是标准 H.264/H.265（vp09/av01/mp4v 等）→ 转码。
+        // 转码时只保留视频与音频轨道（输入为 MKV 时的字幕/附件轨道会被丢弃）。
         val head = ByteArray(12)
         video.inputStream().use { ins -> ins.read(head) }
         val hasFtyp = Mp4Util.hasFtyp(head)

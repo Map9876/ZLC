@@ -97,6 +97,10 @@ object FfmpegAddon {
     /**
      * 用内置 ffmpeg 把 [input] 转码为「标准 MP4 容器（H.265/H.264, CRF, preset）」。
      * 输出到 cache/ffmpeg_tmp，返回输出文件；失败抛 [AddonException]。
+     *
+     * 只保留首路视频 + 首路音频轨道（`-sn -dn` 丢弃字幕/数据轨道）：
+     * 输入为 MKV 等容器时常带 ASS/SRT 字幕与附件，带进 MP4 会破坏动态照片的兼容性。
+     * 用 `V` 而非 `v` 选择视频轨，避免 MKV 内嵌封面图（attached pic）被当成主视频。
      */
     suspend fun transcodeToMp4(
         input: String,
@@ -111,6 +115,8 @@ object FfmpegAddon {
         val tag = if (codec == "h264") "avc1" else "hvc1"
         val args = listOf(
             "-y", "-i", input,
+            "-map", "0:V:0", "-map", "0:a:0?",
+            "-sn", "-dn",
             "-c:v", vcodec,
             "-crf", crf.toString(),
             "-preset", preset,
@@ -119,7 +125,7 @@ object FfmpegAddon {
             "-tag:v", tag,
             out.absolutePath
         )
-        log("info", "正在用 ffmpeg 转码视频为标准 MP4（$vcodec / crf $crf / $preset）", "转码")
+        log("info", "正在用 ffmpeg 转码视频为标准 MP4（$vcodec / crf $crf / $preset，仅保留视频与音频轨道）", "转码")
 
         val pb = ProcessBuilder(listOf(bin.absolutePath) + args)
         pb.redirectErrorStream(true)

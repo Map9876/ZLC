@@ -124,6 +124,10 @@ private class ConflictRequest(
 
 class MainActivity : ComponentActivity() {
 
+    /** 常见高刷档位（Hz）：用于把面板上报的带误差刷新率吸附到标准档位 */
+    private val REFRESH_TIERS =
+        floatArrayOf(60f, 75f, 90f, 120f, 144f, 165f, 180f, 185f, 240f)
+
     private val files = mutableStateListOf<FileItem>()
     private var statusText by mutableStateOf("就绪")
     private var progress by mutableFloatStateOf(0f)
@@ -493,12 +497,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 把窗口切到屏幕支持的最高刷新率模式（120 / 144 / 165 / 185Hz…）。
+     * 把窗口切到屏幕支持的最高刷新率模式，动态适配设备上报的任意档位
+     * （60 / 75 / 90 / 120 / 144 / 165 / 180 / 185 / 240Hz…）。
      *
      * - `preferredDisplayModeId` 是多数 ROM 上真正生效的入口：设置后系统会把该显示切换到
      *   对应模式，Compose 动画随 Choreographer 一并跑在更短的 VSYNC 周期上。
      * - 优先挑选与当前分辨率相同的模式，避免为了高刷把分辨率降档。
-     * - Android 11+ 额外用 `View.setRequestedFrameRate` 声明期望帧率，便于可变刷新率设备按内容调度。
+     * - 面板上报的刷新率常带浮点误差（如 89.97 / 164.98 / 239.76），这里吸附到标准档位后再请求，
+     *   避免系统认为该帧率不被支持而回退到 60Hz。
+     * - 同时写入 `preferredRefreshRate`，兼容只认该字段、忽略 modeId 的 ROM。
+     * - Android 11+ 再用 `View.setRequestedFrameRate` 声明期望帧率，便于可变刷新率设备按内容调度。
      * - go 轻量版面向老设备、以省电为主，不做该请求。
      */
     @Suppress("DEPRECATION")
@@ -507,24 +515,40 @@ class MainActivity : ComponentActivity() {
         try {
             val display = windowManager.defaultDisplay
             val current = display.mode
-            val modes = display.supportedModes
+            val modes = display.supportedModes.filter { it.refreshRate > 0f }
             if (modes.isEmpty()) return
             val sameResolution = modes.filter {
                 it.physicalWidth == current.physicalWidth &&
                     it.physicalHeight == current.physicalHeight
             }
-            val best = (sameResolution.ifEmpty { modes.toList() }).maxByOrNull { it.refreshRate } ?: return
+            val pool = sameResolution.ifEmpty { modes }
+            val best = pool.maxByOrNull { it.refreshRate } ?: return
+            val rate = snapRefreshRate(best.refreshRate)
+
+            val lp = window.attributes
+            var changed = false
             if (best.modeId != current.modeId) {
-                val lp = window.attributes
                 lp.preferredDisplayModeId = best.modeId
-                window.attributes = lp
+                changed = true
             }
+            if (lp.preferredRefreshRate != rate) {
+                lp.preferredRefreshRate = rate
+                changed = true
+            }
+            if (changed) window.attributes = lp
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                window.decorView.requestedFrameRate = best.refreshRate
+                window.decorView.requestedFrameRate = rate
             }
         } catch (_: Exception) {
             // 个别 ROM 不支持切换显示模式：忽略，保持系统默认刷新率
         }
+    }
+
+    /** 常见高刷档位（Hz）。面板上报值有浮点误差时吸附到最近档位，否则保留原值（如 100Hz）。 */
+    private fun snapRefreshRate(raw: Float): Float {
+        val near = REFRESH_TIERS.minByOrNull { kotlin.math.abs(it - raw) } ?: return raw
+        return if (kotlin.math.abs(near - raw) <= 1.5f) near else raw
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -547,6 +571,8 @@ class MainActivity : ComponentActivity() {
         File(outputDir).mkdirs()
         // 启动时自动清理缓存（上次残留的暂存文件），避免占用空间无限膨胀
         cleanupAllCaches()
+        // 清退旧版本下载的外置转码器（自 v3.4.4 起 ffmpeg 随包内置，外置副本已无法执行）
+        purgeLegacyExternalFfmpeg()
 
         // 恢复上次会话的列表（本地 JSON）；异常退出则清空并提示
         when (val s = readListState()) {
@@ -1416,6 +1442,22 @@ class MainActivity : ComponentActivity() {
                 File(incomingDir).listFiles()?.forEach { it.delete() }
                 File(outputDir).walkBottomUp().forEach { it.delete() }
                 cacheDir.walkBottomUp().forEach { it.delete() }
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * 删除 v3.4.3 及更早版本下载到 `filesDir/ffmpeg` 的外置转码器（二进制 + 版本记录）。
+     * 自 v3.4.4 起 ffmpeg 随 APK 内置，外置副本在 Android 10+ 已无法执行，且白占数十 MB 空间。
+     */
+    private fun purgeLegacyExternalFfmpeg() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                File(filesDir, "ffmpeg").deleteRecursively()
+            } catch (_: Exception) {}
+            try {
+                getSharedPreferences("zlivephoto", MODE_PRIVATE).edit()
+                    .remove("ffmpeg_version").remove("ffmpeg_expected").apply()
             } catch (_: Exception) {}
         }
     }
