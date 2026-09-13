@@ -104,7 +104,15 @@ data class FileItem(
     /** 识别出的格式（plugin.name），用于「目标=输入」蓝色提示 */
     val formatKey: String? = null,
     /** 合成任务：配对视频路径（formatKey=compose 时非空） */
-    val composeVideoPath: String? = null
+    val composeVideoPath: String? = null,
+    /** 正在用 ffmpeg 转码配对视频：列表项内展开显示转码进度 */
+    val transcoding: Boolean = false,
+    /** 转码已处理帧数 */
+    val transcodeFrame: Long = 0L,
+    /** 转码总帧数（<=0 表示未知，此时不显示百分比） */
+    val transcodeTotal: Long = 0L,
+    /** 转码预计剩余秒数（<0 表示未知） */
+    val transcodeEtaSec: Long = -1L
 )
 
 data class FormatOption(

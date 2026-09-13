@@ -113,10 +113,12 @@ internal object Converter {
      * @param photoPath 封面照片路径（普通 JPEG）
      * @param videoPath 视频路径（MP4）
      * @param target 目标格式：google | oppo | vivo | vivo_single | xiaomi | honor | meizu
+     * @param onTranscodeProgress 视频转码进度回调 (已处理帧, 总帧数, 预计剩余秒数)；仅转码时触发
      */
     suspend fun compose(
         photoPath: String, videoPath: String, target: String, outDir: String,
-        log: (String, String, String) -> Unit, options: MutableMap<String, Any?> = mutableMapOf()
+        log: (String, String, String) -> Unit, options: MutableMap<String, Any?> = mutableMapOf(),
+        onTranscodeProgress: (frame: Long, total: Long, etaSec: Long) -> Unit = { _, _, _ -> }
     ): MutableList<String> {
         val targetPlugin = FormatRegistry.byName[target]
             ?: throw ConvertException("未知目标格式：$target")
@@ -148,13 +150,18 @@ internal object Converter {
 
         var transcoded: File? = null
         var mp4: ByteArray? = null
+        // 转码进度用的精确总帧数：标准 MP4 分支已解析出轨道信息，可直接复用（免二次解析）
+        var frameHint = -1L
         if (hasFtyp && brand != "qt  ") {
             // 标准 MP4 容器：进一步检查视频编码是否为标准 H.264/H.265，
             // 非标准编码（vp09/av01/mp4v 等）也需转码
             val bytes = video.readBytes()
-            val codec = (Mp4Util.getTrackInfo(bytes)?.get("codec") as? String).orEmpty()
+            val trackInfo = Mp4Util.getTrackInfo(bytes)
+            val codec = (trackInfo?.get("codec") as? String).orEmpty()
             if (codec.isEmpty() || codec in FfmpegAddon.STANDARD_MP4_CODECS) {
                 mp4 = bytes
+            } else {
+                frameHint = (trackInfo?.get("frame_count") as? Long) ?: -1L
             }
         }
 
@@ -164,7 +171,7 @@ internal object Converter {
                 throw VideoContainerException(videoTranscodeHint())
             }
             transcoded = try {
-                FfmpegAddon.transcodeToMp4(videoPath, log)
+                FfmpegAddon.transcodeToMp4(videoPath, log, frameHint, onTranscodeProgress)
             } catch (e: AddonException) {
                 throw VideoContainerException("视频转码失败：${e.message}")
             }

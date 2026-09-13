@@ -113,6 +113,9 @@ object LegacyApp {
     /** 旧版本（Go 版）包名 */
     const val GO_PACKAGE = "com.zsz.zlivephoto.go"
 
+    /** 正常版（完整版）包名 */
+    const val NORMAL_PACKAGE = "com.zsz.zlivephoto"
+
     /**
      * 是否应切换到正常版：Go 版仅面向旧安卓（minSdk 23），
      * 系统版本达到正常版 minSdk（Android 10 / API 29）及以上时不再适用。
@@ -121,14 +124,25 @@ object LegacyApp {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
 
     /** 旧版本（Go 版）是否已安装（按包名精确检测，不依赖「访问应用列表」权限） */
-    fun isGoInstalled(context: Context): Boolean = runCatching {
-        context.packageManager.getPackageInfo(GO_PACKAGE, 0)
+    fun isGoInstalled(context: Context): Boolean = isInstalled(context, GO_PACKAGE)
+
+    /** 正常版（完整版）是否已安装（Go 版据此决定「直接打开」还是「去下载」） */
+    fun isNormalInstalled(context: Context): Boolean = isInstalled(context, NORMAL_PACKAGE)
+
+    private fun isInstalled(context: Context, pkg: String): Boolean = runCatching {
+        context.packageManager.getPackageInfo(pkg, 0)
     }.getOrNull() != null
 
     /** 发起卸载旧版本的系统卸载请求 */
     fun uninstallIntent(context: Context): Intent =
         Intent(Intent.ACTION_DELETE, Uri.parse("package:$GO_PACKAGE"))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** 打开正常版的启动意图（未安装或无可启动入口时返回 null） */
+    fun launchNormalIntent(context: Context): Intent? = runCatching {
+        context.packageManager.getLaunchIntentForPackage(NORMAL_PACKAGE)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }.getOrNull()
 }
 
 /** 旧版本卸载提示的状态控制器（普通版启动时检测到旧 Go 版已安装时使用） */

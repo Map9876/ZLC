@@ -957,7 +957,21 @@ private fun SortControlsRow(
         SortFieldChip("大小", AlbumSortField.SIZE, sortField, onSortField)
         SortFieldChip("名称", AlbumSortField.NAME, sortField, onSortField)
         Spacer(Modifier.weight(1f))
-        IconButton(onClick = { haptic.click(); onToggleAscending() }) {
+        // 用 40dp 自绘点击块代替 IconButton：IconButton 的最小触摸目标为 48dp，
+        // 会把本行撑到 56dp；而搜索展开时本控件会移到第二行，第一行随之从 56dp 缩到 48dp，
+        // 表现为「搜索栏与上方控件的间距」突然跳变 8dp。锁死 40dp 后两行等高，跳变消失。
+        Box(
+            Modifier
+                .size(40.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) {
+                    haptic.click()
+                    onToggleAscending()
+                },
+            contentAlignment = Alignment.Center
+        ) {
             Icon(
                 if (sortAscending) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
                 contentDescription = if (sortAscending) "倒序" else "正序",

@@ -51,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -173,6 +174,9 @@ class MainActivity : ComponentActivity() {
     // 由用户退出到桌面时 onStop 里的同步兜底。
     private var iconApplySafe = true
     private var wallpaperColorsListener: WallpaperManager.OnColorsChangedListener? = null
+
+    /** Go 版门禁重新判定的触发计数：每次回到前台递增（见 onResume），驱动启动检查重跑 */
+    private var goGateTick by mutableIntStateOf(0)
 
     // 文件名冲突弹窗（批量与单个转换共用）
     private var conflictRequest by mutableStateOf<ConflictRequest?>(null)
@@ -643,22 +647,38 @@ class MainActivity : ComponentActivity() {
                 val legacyFlow = rememberLegacyUninstallFlow()
 
                 // 启动时自动检查更新。
-                // 优先级：Go 版强制切换正常版 → 软件更新 → 旧版本卸载提示。
-                // Go 轻量版在 Android 10+ 上必须切换（不受「启动时检查更新」开关与
-                // 「跳过此版本」影响，弹窗也不可关闭；拉取失败时挡住使用并提供重试）；
+                // 优先级：Go 版门禁（打开正常版 / 强制更新）→ 软件更新 → 旧版本卸载提示。
+                // Go 轻量版在 Android 10+ 上旧版本已不可用，不受「启动时检查更新」开关与
+                // 「跳过此版本」影响，弹窗一律不可关闭：已装正常版就要求直接打开，
+                // 未装则引导下载安装（拉取失败也挡住使用并提供重试）；
                 // 普通版仍遵循用户设置与跳过记录。
                 // startupCheckKey 用于「必须更新」弹窗上的「重试」重新发起拉取。
                 var startupCheckKey by remember { mutableStateOf(0) }
-                LaunchedEffect(startupCheckKey) {
-                    if (BuildConfig.FLAVOR == "go" && LegacyApp.shouldSwitchToNormal()) {
-                        val normalInfo = UpdateChecker.fetchLatestForNormal()
-                        if (normalInfo != null) {
-                            updateFlow.presentSwitchToNormal(normalInfo)
-                        } else {
-                            updateFlow.showForcedBlocked()
-                        }
+                // Go 版在 Android 10+ 上不再适用：整个会话都必须被门禁挡住
+                val forceSwitch = BuildConfig.FLAVOR == "go" && LegacyApp.shouldSwitchToNormal()
+
+                // ── Go 门禁（Android 10+ 独占；每次回到前台重新判定，见 goGateTick）──
+                // ① 本机已装正常版 → 直接要求打开（不必再下载安装）；
+                // ② 未装正常版 → 拉取正常版信息引导更新，拉取失败则只给「重试」。
+                LaunchedEffect(startupCheckKey, goGateTick, forceSwitch) {
+                    if (!forceSwitch) return@LaunchedEffect
+                    if (LegacyApp.isNormalInstalled(this@MainActivity)) {
+                        updateFlow.presentRequireNormalOpen()
                         return@LaunchedEffect
                     }
+                    // 已有弹窗（下载中 / 阻塞重试）时不重复发起网络请求
+                    if (updateFlow.info != null || updateFlow.forcedBlocked) return@LaunchedEffect
+                    val normalInfo = UpdateChecker.fetchLatestForNormal()
+                    if (normalInfo != null) {
+                        updateFlow.presentSwitchToNormal(normalInfo)
+                    } else {
+                        updateFlow.showForcedBlocked()
+                    }
+                }
+
+                LaunchedEffect(startupCheckKey) {
+                    // Go 门禁场景由上面的 effect 独占处理，不走常规检查更新
+                    if (forceSwitch) return@LaunchedEffect
                     var updatePrompted = false
                     if (AppSettings.checkUpdateOnStartup) {
                         val r = UpdateChecker.check(BuildConfig.VERSION_NAME)
@@ -1024,6 +1044,14 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         iconApplySafe = false
+    }
+
+    /** 回到前台：Go 版在 Android 10+ 上的门禁必须重新判定——用户可能刚装完正常版返回
+     *  （此时应改为「打开正常版」而不能再放行旧版），也可能中途卸载了正常版
+     *  （此时回到「必须更新」）。 */
+    override fun onResume() {
+        super.onResume()
+        if (BuildConfig.FLAVOR == "go" && LegacyApp.shouldSwitchToNormal()) goGateTick++
     }
 
     /** 退到后台时把桌面图标同步为当前主题色。
@@ -1638,7 +1666,13 @@ class MainActivity : ComponentActivity() {
                         }
                         withContext(Dispatchers.Main) {
                             val i0 = files.indexOfFirst { it.path == item.path }
-                            if (i0 >= 0) files[i0] = files[i0].copy(info = "转换中…")
+                            if (i0 >= 0) files[i0] = files[i0].copy(
+                                info = "转换中…",
+                                transcoding = false,
+                                transcodeFrame = 0L,
+                                transcodeTotal = 0L,
+                                transcodeEtaSec = -1L
+                            )
                         }
                         var n = 0
                         var staged: List<String>? = null
@@ -1655,6 +1689,20 @@ class MainActivity : ComponentActivity() {
                                     log = { level, msg, tag ->
                                         if (level == "error" || level == "warn") {
                                             statusText = "[$tag] $msg"
+                                        }
+                                    },
+                                    // 转码进度：写到「该任务自己的列表项」上（帧数/总帧/预计剩余）
+                                    onTranscodeProgress = { frame, total, etaSec ->
+                                        runOnUiThread {
+                                            val i = files.indexOfFirst { it.path == item.path }
+                                            if (i >= 0) {
+                                                files[i] = files[i].copy(
+                                                    transcoding = true,
+                                                    transcodeFrame = frame,
+                                                    transcodeTotal = total,
+                                                    transcodeEtaSec = etaSec
+                                                )
+                                            }
                                         }
                                     }
                                 )
@@ -1703,7 +1751,9 @@ class MainActivity : ComponentActivity() {
                                     // 处理期间不移除项目：仅更新状态，待全部完成后统一左滑清除
                                     files[i] = files[i].copy(
                                         info = if (finalOutputs == null) "完成（跳过：同名冲突）"
-                                               else "完成（导出 $n 个）"
+                                               else "完成（导出 $n 个）",
+                                        transcoding = false,
+                                        transcodeEtaSec = -1L
                                     )
                                 }
                             }
@@ -1711,7 +1761,11 @@ class MainActivity : ComponentActivity() {
                             withContext(Dispatchers.Main) {
                                 val i = files.indexOfFirst { it.path == item.path }
                                 if (i >= 0) {
-                                    files[i] = files[i].copy(info = "失败：${e.message}")
+                                    files[i] = files[i].copy(
+                                        info = "失败：${e.message}",
+                                        transcoding = false,
+                                        transcodeEtaSec = -1L
+                                    )
                                 }
                             }
                         } finally {

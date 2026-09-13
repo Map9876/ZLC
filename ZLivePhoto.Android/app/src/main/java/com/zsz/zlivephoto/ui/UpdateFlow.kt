@@ -86,6 +86,9 @@ internal class UpdateFlowController(
     /** Go 强制切换但未能获取新版本信息（无网络等）：仍不可关闭，只提供「重试」 */
     var forcedBlocked by mutableStateOf(false)
         private set
+    /** Go 运行在 Android 10+ 且本机已安装正常版：不可关闭，必须打开正常版才能继续使用 */
+    var requireNormalOpen by mutableStateOf(false)
+        private set
 
     private var downloadJob: Job? = null
 
@@ -94,7 +97,7 @@ internal class UpdateFlowController(
      * 同一时刻只允许一个弹窗占用，处理（转换/导入）进行中一律延后。
      */
     val wantsDialog: Boolean
-        get() = forcedBlocked || busy != null || permissionApk != null ||
+        get() = requireNormalOpen || forcedBlocked || busy != null || permissionApk != null ||
             message != null || info != null
 
     /**
@@ -115,6 +118,7 @@ internal class UpdateFlowController(
         reinstallMode = reinstall
         switchToNormalMode = false
         forcedBlocked = false
+        requireNormalOpen = false
         showNotes = false
         busy = null
         permissionApk = null
@@ -136,6 +140,16 @@ internal class UpdateFlowController(
     /** 关闭阻塞弹窗（重试前先收起，由宿主重新发起拉取） */
     fun clearForcedBlocked() {
         forcedBlocked = false
+    }
+
+    /**
+     * Go 运行在 Android 10+ 且本机已安装正常版：显示不可关闭的弹窗，只能「打开正常版」。
+     * 比「去下载」优先——重复下载安装已是多余，直接打开即可继续使用。
+     */
+    fun presentRequireNormalOpen() {
+        if (requireNormalOpen) return
+        dismissAll()
+        requireNormalOpen = true
     }
 
     /**
@@ -172,6 +186,7 @@ internal class UpdateFlowController(
         reinstallMode = false
         switchToNormalMode = false
         forcedBlocked = false
+        requireNormalOpen = false
         showNotes = false
         busy = null
         permissionApk = null
@@ -346,6 +361,31 @@ internal fun UpdateFlowHosts(
 
     // 全局弹窗闸门：同一时刻只允许一个会话型弹窗（处理进行中时由闸门整体抑制）
     if (!enabled) return
+
+    // ── Go 运行在 Android 10+ 且本机已安装正常版：不可关闭，只能打开正常版 ──
+    // 优先级最高：已装正常版就没必要再走「下载安装」，直接打开即可继续使用。
+    if (flow.requireNormalOpen) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("请使用正常版本", fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "本机系统为 Android 10 及以上，Go 轻量版已不再适配，旧版本无法继续使用。\n\n" +
+                        "检测到本机已安装正常版本（ZLC），请直接打开正常版本继续使用" +
+                        "（新版不再提供 Go 兼容版本，旧版本可卸载以释放空间）。"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vibrate()
+                    LegacyApp.launchNormalIntent(context)?.let { intent ->
+                        runCatching { context.startActivity(intent) }
+                    }
+                }) { Text("打开正常版") }
+            }
+        )
+        return
+    }
 
     // ── Go 强制切换但拉取失败：不可关闭，只能重试（未更新前无法继续使用）──
     if (flow.forcedBlocked) {

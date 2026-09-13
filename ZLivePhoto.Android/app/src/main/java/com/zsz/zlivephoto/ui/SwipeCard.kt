@@ -4,12 +4,18 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -32,6 +38,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -50,6 +57,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -363,10 +371,78 @@ private fun FileCardContent(item: FileItem, sameFormat: Boolean) {
                     style = MaterialTheme.typography.bodySmall,
                     color = infoColor
                 )
+                // 视频转码进度：只在该任务自己的卡片内展开，起止用等高动画平滑过渡，
+                // 避免进度出现/消失时列表项高度突变
+                AnimatedVisibility(
+                    visible = item.transcoding,
+                    enter = expandVertically(
+                        expandFrom = Alignment.Top,
+                        animationSpec = tween(260, easing = FastOutSlowInEasing)
+                    ) + fadeIn(tween(200)),
+                    exit = shrinkVertically(
+                        shrinkTowards = Alignment.Top,
+                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                    ) + fadeOut(tween(140))
+                ) {
+                    TranscodeProgress(item)
+                }
             }
         }
     }
 }
+
+/**
+ * 转码进度（单个任务）：进度条以「已处理帧 / 总帧数」为准，并给出预计剩余时间。
+ * 总帧数未知时退化为「已处理 N 帧」（不显示百分比与剩余时间）。
+ */
+@Composable
+private fun TranscodeProgress(item: FileItem) {
+    val total = item.transcodeTotal
+    val known = total > 0L
+    val fraction = if (known) (item.transcodeFrame.toFloat() / total).coerceIn(0f, 1f) else 0f
+    // ffmpeg 每 0.5s 上报一次；用同长度线性补间把台阶填成连续推进，避免进度条一顿一顿
+    val animated by animateFloatAsState(
+        targetValue = fraction,
+        animationSpec = tween(500, easing = LinearEasing),
+        label = "transcodeFraction"
+    )
+    val eta = item.transcodeEtaSec
+    val label = buildString {
+        if (known) {
+            append("转码 ${(fraction * 100f).roundToInt()}%")
+            append(" · ${item.transcodeFrame}/$total 帧")
+            if (eta >= 0L) append(" · 预计剩余 ${formatEta(eta)}")
+        } else {
+            append("转码中 · 已处理 ${item.transcodeFrame} 帧")
+        }
+    }
+    Column(modifier = Modifier.padding(top = 8.dp)) {
+        LinearProgressIndicator(
+            progress = { animated },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp)),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            strokeCap = StrokeCap.Round,
+            gapSize = 0.dp,
+            drawStopIndicator = {}
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** 预计剩余秒数 → 「12 秒」/「1 分 05 秒」 */
+private fun formatEta(sec: Long): String =
+    if (sec < 60L) "${sec} 秒" else "${sec / 60} 分 ${(sec % 60).toString().padStart(2, '0')} 秒"
 
 /** 解码列表缩略图：按 2 的幂降采样至约 128px，并按 EXIF 方向旋转；失败返回 null。 */
 internal fun decodeThumbnail(path: String): Bitmap? {
