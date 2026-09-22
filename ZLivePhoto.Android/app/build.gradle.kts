@@ -65,7 +65,9 @@ android {
                 val props = Properties()
                 props.load(FileInputStream(propsFile))
                 signingConfig = signingConfigs.create("release") {
-                    storeFile = file(props["storeFile"] as String)
+                    // storeFile 是相对路径，需相对 rootProject（signing.properties 所在目录）解析，
+                    // 否则会被 :app 子模块当成相对 app/ 目录而找不到 keystore。
+                    storeFile = rootProject.file(props["storeFile"] as String)
                     storePassword = props["storePassword"] as String
                     keyAlias = props["keyAlias"] as String
                     keyPassword = props["keyPassword"] as String
