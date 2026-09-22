@@ -1,3 +1,16 @@
+> ## 🔧 修复荣耀 Android 14 打不开的问题（本 fork 维护）
+>
+> 原版在**荣耀 Android 14（API 34）**上启动即闪退，已修复两处根因（改动见 `ZLivePhoto.Android/app/src/main/java/com/zsz/zlivephoto/MainActivity.kt`）：
+>
+> 1. **刷新率适配导致 `NoSuchMethodError`**：`applyMaxRefreshRate()` 在 `Build.VERSION.SDK_INT >= Build.VERSION_CODES.R`（API 30）的守卫下调用了仅 **Android 15（API 35）** 才引入的 `View.setRequestedFrameRate`；在 API 30~34 上该方法不存在，调用即抛 `NoSuchMethodError`（属于 `Error` 而非 `Exception`，原 `catch (Exception)` 抓不住）→ 启动崩溃。已将守卫抬高到 `>= 35`，并把 `catch` 改为 `catch (Throwable)`。
+> 2. **冷启动图标切换被系统杀进程**：原先在冷启动的 `LaunchedEffect(Unit)` 里直接调用 `IconManager.apply()`，而此时 Activity 仍处于前台，`apply()` 会禁用当前正在使用的桌面图标 alias（动态取色下壁纸色相映射到非默认 alias 时尤为明显），触发系统直接停掉本 Activity → 一启动就闪退。现改到 `onStop`（退到后台）或壁纸颜色变化监听里执行。
+>
+> 本 fork 额外提供 `.github/workflows/build-apk.yml`：推送 `v*` 标签即可在 GitHub Actions 自动构建并发布 release APK（normal 完整版 + go 轻量版）。
+>
+> ---
+>
+> **以下为原仓库 README：**
+
 # Z-LivePhoto-Converter
 
 > 动态照片格式互转工具：Google Motion Photo / OPPO / vivo / 小米 / 荣耀 / 魅族 / Apple Live Photo 互转、拆解与合成

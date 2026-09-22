@@ -541,11 +541,16 @@ class MainActivity : ComponentActivity() {
             }
             if (changed) window.attributes = lp
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // setRequestedFrameRate(View) 仅在 Android 15（API 35, VANILLA_ICE_CREAM）才引入。
+            // 原守卫用 >=R(API30)，在 API 30~34 上该方法不存在，调用即抛
+            // NoSuchMethodError（属于 Error 而非 Exception，下方 catch(Exception) 抓不住）→ 启动闪退。
+            // 抬高到 35；真正生效的刷新率入口仍是上面的 preferredDisplayModeId（见本函数注释）。
+            if (Build.VERSION.SDK_INT >= 35) {
                 window.decorView.requestedFrameRate = rate
             }
-        } catch (_: Exception) {
-            // 个别 ROM 不支持切换显示模式：忽略，保持系统默认刷新率
+        } catch (_: Throwable) {
+            // 个别 ROM 不支持切换显示模式、或该 API 被厂商裁剪（NoSuchMethodError 属 Error
+            // 而非 Exception）→ 一并吞掉，保持系统默认刷新率，绝不因刷新率适配而闪退
         }
     }
 
@@ -631,12 +636,14 @@ class MainActivity : ComponentActivity() {
                 // 处理过程中吞掉系统返回键（预测式返回下同样生效）
                 BackHandler(enabled = isConverting) { /* 处理中不响应返回 */ }
 
-                // 桌面图标跟随主题色：仅冷启动应用一次（前台运行时禁用正在使用的入口
-                // alias 会导致系统停掉本 Activity → 闪退；主题色变化后的同步在 onStop
-                // 完成，动态取色下系统壁纸颜色变化由 registerWallpaperColorListener 驱动）
+                // 桌面图标跟随主题色：原先在冷启动的 LaunchedEffect(Unit) 里直接调用
+                // IconManager.apply()，但此时 Activity 仍处于前台——apply() 会禁用当前
+                // 正在使用的入口 alias（如动态取色下壁纸色相映射到非默认 alias 时），
+                // 触发系统直接停掉本 Activity → 一启动就闪退（且 go 版因 apply() 直接
+                // return 而不会触发，故只有 normal 版出现）。
+                // 安全做法：图标同步只在 onStop（应用退到后台）或 registerWallpaperColorListener
+                // （同样经 iconApplySafe 门禁）里执行，此处仅保留「所有文件访问」引导。
                 LaunchedEffect(Unit) {
-                    IconManager.apply(this@MainActivity)
-                    // 已有媒体读取权限但缺「所有文件访问」（R+）时，弹一次引导（升级用户路径）
                     maybePromptAllFilesAccess()
                 }
 
