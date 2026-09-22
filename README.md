@@ -5,7 +5,15 @@
 > 1. **刷新率适配导致 `NoSuchMethodError`**：`applyMaxRefreshRate()` 在 `Build.VERSION.SDK_INT >= Build.VERSION_CODES.R`（API 30）的守卫下调用了仅 **Android 15（API 35）** 才引入的 `View.setRequestedFrameRate`；在 API 30~34 上该方法不存在，调用即抛 `NoSuchMethodError`（属于 `Error` 而非 `Exception`，原 `catch (Exception)` 抓不住）→ 启动崩溃。已将守卫抬高到 `>= 35`，并把 `catch` 改为 `catch (Throwable)`。
 > 2. **冷启动图标切换被系统杀进程**：原先在冷启动的 `LaunchedEffect(Unit)` 里直接调用 `IconManager.apply()`，而此时 Activity 仍处于前台，`apply()` 会禁用当前正在使用的桌面图标 alias（动态取色下壁纸色相映射到非默认 alias 时尤为明显），触发系统直接停掉本 Activity → 一启动就闪退。现改到 `onStop`（退到后台）或壁纸颜色变化监听里执行。
 >
-> 本 fork 额外提供 `.github/workflows/build-apk.yml`：推送 `v*` 标签即可在 GitHub Actions 自动构建并发布 release APK（normal 完整版 + go 轻量版）。
+> ### 自动构建 / 发布 Release APK
+> 本 fork 提供 `.github/workflows/build-apk.yml`：
+> - 推送 `main` 分支：自动构建 `normal`（完整版）+ `go`（轻量版）两个 APK，作为 Actions 产物可下载。
+> - 打 `v*` 标签并推送：自动把两个 APK 发布到 GitHub Release。例如：
+>   ```bash
+>   git tag v3.4.7
+>   git push <远端地址或带 token 的推送地址> v3.4.7
+>   ```
+> - 关于 `normal` 完整版与 ffmpeg：仓库不含 82MB 的 `libffmpeg.so`（上游约定自行放入 `app/src/normal/jniLibs/arm64-v8a/`）。CI 构建出的 `normal` 包**不含转码能力**，但应用本身可正常安装与使用（字节级格式互转、拆解合成照常）；仅当输入视频为非标准 MP4（WebM/MKV/AV1 等）时，完整版原本会用 ffmpeg 自动转码，此处会跳过。这与本地直接 `assembleNormalRelease` 且不放入 `.so` 的行为一致（我们之前本地构建的 normal 包也没有 ffmpeg，使用无碍），日常使用不受影响。需要带转码可另行放入 `libffmpeg.so` 或补进 workflow。
 >
 > ---
 >
